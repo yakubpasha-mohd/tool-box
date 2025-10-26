@@ -1,0 +1,126 @@
+Step-by-Step: Remove MySQL 8 on Amazon Linux 2023
+🔹 Step 1 — Stop MySQL service
+sudo systemctl stop mysqld
+sudo systemctl disable mysqld
+
+
+Check status:
+
+sudo systemctl status mysqld
+
+
+It should show inactive (dead).
+
+🔹 Step 2 — Remove MySQL packages
+
+Run this to remove all related packages installed from mysql80-community:
+
+sudo dnf remove -y mysql-community-server mysql-community-client mysql-community-libs mysql-community-common mysql-community-client-plugins mysql-community-icu-data-files
+
+
+💡 Tip: To see all MySQL packages installed before removing:
+
+dnf list installed | grep -i mysql
+
+🔹 Step 3 — Remove MySQL repository files
+
+Remove the MySQL Community repo definitions installed from the .rpm:
+
+sudo dnf remove -y mysql80-community-release
+
+
+Then clean up the repo cache:
+
+sudo dnf clean all
+sudo rm -f /etc/yum.repos.d/mysql-community.repo /etc/yum.repos.d/mysql-community-source.repo
+
+🔹 Step 4 — Remove MySQL data and configuration directories
+
+By default, MySQL stores data under /var/lib/mysql and config files under /etc/my.cnf*.
+
+Run:
+
+sudo rm -rf /var/lib/mysql
+sudo rm -rf /etc/my.cnf /etc/my.cnf.d
+
+
+If you had a custom config file (for example /etc/mysql/mysql.conf.d or /etc/mysql/conf.d):
+
+sudo rm -rf /etc/mysql*
+
+🔹 Step 5 — Remove the MySQL user and group (optional, for clean wipe)
+
+Check if they exist first:
+
+getent passwd mysql
+getent group mysql
+
+
+Then remove if desired:
+
+sudo userdel -r mysql 2>/dev/null || true
+sudo groupdel mysql 2>/dev/null || true
+
+🔹 Step 6 — Clean orphaned dependencies and metadata
+sudo dnf autoremove -y
+sudo dnf clean all
+
+🔹 Step 7 — Verify removal
+
+Check that:
+
+No mysqld process is running
+
+No mysql binaries remain in /usr/bin
+
+No service named mysqld exists
+
+Run:
+
+ps aux | grep mysqld
+which mysql || echo "mysql binary removed"
+sudo systemctl list-unit-files | grep mysql
+
+
+All should return no matches or “not found”.
+
+🔹 (Optional) Step 8 — Remove GPG keys
+
+You can optionally remove imported MySQL GPG keys if you no longer plan to use MySQL Community repos:
+
+sudo rpm -e gpg-pubkey-$(rpm -qa | grep -i mysql | cut -d'-' -f3- | head -1) 2>/dev/null || true
+
+
+Or simply remove all MySQL-related GPG keys manually:
+
+rpm -qa gpg-pubkey | grep -i mysql
+
+
+then use:
+
+sudo rpm -e <keyname>
+
+✅ Step 9 — (Optional) Verify it’s clean
+
+Run:
+
+sudo dnf list installed | grep -i mysql || echo "✅ MySQL fully removed"
+
+🔁 If you plan to reinstall later
+
+If you’ll reinstall later, ensure that:
+
+sudo dnf -y install https://dev.mysql.com/get/mysql80-community-release-el9-3.noarch.rpm
+sudo rpm --import https://repo.mysql.com/RPM-GPG-KEY-mysql-2023
+
+
+before reinstalling.
+
+🧾 Summary of Key Commands
+Purpose	Command
+Stop & disable service	sudo systemctl stop mysqld && sudo systemctl disable mysqld
+Remove packages	sudo dnf remove -y mysql-community-*
+Remove repo	sudo dnf remove -y mysql80-community-release
+Delete data/config	sudo rm -rf /var/lib/mysql /etc/my.cnf*
+Clean system	sudo dnf autoremove -y && sudo dnf clean all
+Verify removal	`dnf list installed
