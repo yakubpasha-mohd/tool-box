@@ -1,0 +1,161 @@
+HEL 9 EC2 NGINX setup to include HTTPS (TLS) using Let’s Encrypt (Certbot) with automatic renewal.
+
+This will build on the previous /opt/custom/nginx configuration you already have.
+We’ll use Certbot from EPEL + nginx plugin for fully automated certificate generation and renewal.
+
+✅ Prerequisites
+
+Before starting:
+
+You must have a valid domain name (e.g., example.com) that resolves to your EC2 instance’s public IP.
+
+Port 80 and 443 must be open in:
+
+EC2 Security Group
+
+OS firewall (firewalld)
+
+# Check firewalld is running
+systemctl status firewalld
+
+# If active, allow HTTP/HTTPS
+sudo firewall-cmd --permanent --add-service=http
+sudo firewall-cmd --permanent --add-service=https
+sudo firewall-cmd --reload
+
+🧩 Step-by-Step: HTTPS + Certbot Installation & Configuration
+
+Save this as enable-https-certbot.sh and run with sudo bash enable-https-certbot.sh yourdomain.com
+
+enable-https-certbot.sh
+#!/usr/bin/env bash
+# Enable HTTPS (Let's Encrypt Certbot) on RHEL9 EC2 NGINX
+# Usage: sudo bash enable-https-certbot.sh <your-domain-name>
+
+set -euo pipefail
+
+DOMAIN_NAME=${1:-}
+if [[ -z "$DOMAIN_NAME" ]]; then
+  echo "Usage: $0 <your-domain-name>"
+  exit 1
+fi
+
+CUSTOM_DIR="/opt/custom/nginx"
+CUSTOM_CONFDIR="${CUSTOM_DIR}/conf.d"
+CUSTOM_HTML="${CUSTOM_DIR}/html"
+CUSTOM_SERVER_CONF="${CUSTOM_CONFDIR}/00-default.conf"
+
+echo "==> Enabling HTTPS for domain: ${DOMAIN_NAME}"
+
+# 1) Ensure EPEL repo and Certbot installed
+echo "==> Installing Certbot and NGINX plugin..."
+dnf -y install epel-release
+dnf -y install certbot python3-certbot-nginx
+
+# 2) Check nginx is installed and running
+if ! systemctl is-active --quiet nginx; then
+  echo "==> Starting nginx..."
+  systemctl enable --now nginx
+fi
+
+# 3) Backup existing config (just in case)
+echo "==> Backing up custom nginx config..."
+cp -f "${CUSTOM_SERVER_CONF}" "${CUSTOM_SERVER_CONF}.bak.$(date +%F-%H%M%S)" || true
+
+# 4) Modify the custom server block to use your domain name
+echo "==> Updating server_name in nginx config..."
+sed -i "s/server_name  _;/server_name  ${DOMAIN_NAME};/" "${CUSTOM_SERVER_CONF}"
+
+# 5) Test configuration
+nginx -t && systemctl reload nginx
+
+# 6) Request Let's Encrypt certificate (interactive)
+echo "==> Requesting certificate from Let's Encrypt..."
+certbot --nginx -d "${DOMAIN_NAME}" --redirect --agree-tos -m admin@"${DOMAIN_NAME}" --non-interactive
+
+# 7) Verify certificate
+echo "==> Certificate files installed under /etc/letsencrypt/live/${DOMAIN_NAME}/"
+ls -l /etc/letsencrypt/live/${DOMAIN_NAME}/
+
+# 8) Test nginx configuration again
+nginx -t && systemctl reload nginx
+
+# 9) Set up auto-renewal (Certbot timer handles this)
+echo "==> Enabling automatic certificate renewal..."
+systemctl enable --now certbot-renew.timer
+
+# 10) Optional manual dry-run renewal test
+echo "==> Running dry-run renewal test..."
+certbot renew --dry-run
+
+echo "==> HTTPS successfully enabled for ${DOMAIN_NAME}"
+echo "Visit: https://${DOMAIN_NAME}"
+
+🔒 What this script does
+Step	Action
+1	Installs EPEL + Certbot + NGINX plugin
+2	Ensures nginx is running
+3	Backs up your custom /opt/custom/nginx/conf.d/00-default.conf
+4	Replaces server_name _; with your actual domain
+5	Validates nginx configuration
+6	Obtains a Let’s Encrypt certificate (non-interactive)
+7	Shows where cert files are stored (/etc/letsencrypt/live/<domain>/)
+8	Reloads nginx with HTTPS
+9	Enables auto-renew via systemd timer
+10	Verifies renewal with a dry run
+🗂️ Resulting File Paths
+File	Description
+/opt/custom/nginx/conf.d/00-default.conf	Now contains HTTPS configuration (Certbot automatically edits it)
+/etc/letsencrypt/live/<domain>/	Certificates and keys
+/etc/nginx/conf.d/99-custom-include.conf	Still includes your /opt/custom/nginx configs
+/etc/systemd/system/timers.target.wants/certbot-renew.timer	Auto-renewal every 12 hours
+🧠 How Renewal Works
+
+Certbot’s systemd timer runs twice daily.
+
+If a certificate is near expiry (<30 days), Certbot renews it.
+
+It automatically reloads nginx after successful renewal.
+
+Check the status anytime:
+
+sudo systemctl status certbot-renew.timer
+sudo journalctl -u certbot
+
+🌐 Example output
+
+After successful execution, you’ll see something like:
+
+Congratulations! You have successfully enabled HTTPS on:
+  https://yourdomain.com
+
+🚀 Optional Enhancements
+
+You can extend this setup easily:
+
+Redirect all HTTP → HTTPS (Certbot already sets this via --redirect)
+
+Force strong TLS security:
+
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_prefer_server_ciphers on;
+ssl_ciphers HIGH:!aNULL:!MD5;
+
+
+Add security headers:
+
+add_header X-Frame-Options DENY;
+add_header X-Content-Type-Options nosniff;
+add_header Referrer-Policy no-referrer-when-downgrade;
+
+✅ Final Verification Steps
+sudo nginx -t
+sudo systemctl reload nginx
+sudo certbot certificates
+curl -I https://yourdomain.com
+
+
+You should see:
+
+HTTP/2 200
+server: nginx/1.22.1
