@@ -1,0 +1,70 @@
+File Name: install_nodejs_rhel9.sh
+#!/bin/bash
+# ----------------------------------------------------------
+# Node.js Installation Script for Amazon EC2 (RHEL 9)
+# ----------------------------------------------------------
+# Author: Yakub Pasha
+# Version: 1.0
+# Description: Installs Node.js LTS and NPM on RHEL 9-based EC2 instances
+# ----------------------------------------------------------
+
+# Exit on error
+set -e
+
+echo "---------------------------------------------"
+echo "Starting Node.js Installation on RHEL 9 EC2..."
+echo "---------------------------------------------"
+
+# Step 1: Update system packages
+echo "[1/5] Updating system packages..."
+sudo dnf -y update
+
+# Step 2: Install required dependencies
+echo "[2/5] Installing dependencies..."
+sudo dnf -y install curl gcc-c++ make
+
+# Step 3: Enable NodeSource repository for Node.js LTS (e.g., Node 20.x)
+echo "[3/5] Adding NodeSource repository..."
+curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
+
+# Step 4: Install Node.js and NPM
+echo "[4/5] Installing Node.js and npm..."
+sudo dnf -y install nodejs
+
+# Step 5: Verify installation
+echo "[5/5] Verifying installation..."
+node -v
+npm -v
+
+echo "---------------------------------------------"
+echo "✅ Node.js installation completed successfully!"
+echo "---------------------------------------------"
+
+🧩 How to Use
+
+Connect to your EC2 Instance
+
+ssh -i your-key.pem ec2-user@<EC2_PUBLIC_IP>
+
+
+Create the installation script
+
+nano install_nodejs_rhel9.sh
+
+
+Paste the above script, then save and exit (Ctrl+O, Enter, Ctrl+X).
+
+Make the script executable
+
+chmod +x install_nodejs_rhel9.sh
+
+
+Run the script
+
+sudo ./install_nodejs_rhel9.sh
+
+
+Verify
+
+node -v
+npm -v
