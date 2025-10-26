@@ -1,0 +1,198 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  CloudFormation template to launch an EC2 (RHEL 9) instance and install MySQL
+  8 Community Server with a database and user created. Supports optional remote
+  access (opens port 3306 when enabled).
+
+Parameters:
+  ImageId:
+    Type: String
+    Description: "RHEL9 AMI ID for your region (e.g. ami-xxxx). Provide a RHEL9 HVM AMI."
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    Description: EC2 instance type
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair to enable SSH access
+  SSHLocation:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: The IP address range that can be used to SSH to the EC2 instances
+  DBName:
+    Type: String
+    Description: Name of the application database to create
+    Default: appdb
+  DBUser:
+    Type: String
+    Description: Application DB username to create
+    Default: appuser
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: Password for the application DB user
+  RootPassword:
+    Type: String
+    NoEcho: true
+    Description: MySQL root password to set during provisioning
+  AllowRemote:
+    Type: String
+    AllowedValues: ["yes", "no"]
+    Default: "no"
+    Description: Set to 'yes' to allow remote MySQL access (will open SG port 3306)
+  MySQLRepoRPM:
+    Type: String
+    Default: https://dev.mysql.com/get/mysql80-community-release-el9-3.noarch.rpm
+    Description: URL for the MySQL Yum repo RPM (change if upstream URL changes)
+
+Conditions:
+  AllowRemoteCondition: !Equals [ !Ref AllowRemote, "yes" ]
+
+Resources:
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for RHEL9 EC2 running MySQL
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SSHLocation
+      VpcId: !Ref AWS::NoValue
+    Metadata:
+      Note: "If you deploy in a default VPC this SG will be created. If you want a VPC-specific deployment, edit the template to supply a VPC and subnet."
+
+  SSHIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref InstanceSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: !Ref SSHLocation
+
+  MySQLIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: AllowRemoteCondition
+    Properties:
+      GroupId: !Ref InstanceSecurityGroup
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      CidrIp: 0.0.0.0/0
+
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SecurityGroupIds:
+        - !Ref InstanceSecurityGroup
+      UserData: !Base64 |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        DB_NAME='${DBName}'
+        DB_USER='${DBUser}'
+        DB_PASS='${DBPassword}'
+        ROOT_PASSWORD='${RootPassword}'
+        ALLOW_REMOTE='${AllowRemote}'
+        BIND_ADDRESS='127.0.0.1'
+        if [[ "${ALLOW_REMOTE}" =~ ^(yes|true|1)$ ]]; then
+          BIND_ADDRESS='0.0.0.0'
+        fi
+
+        MYSQL_REPO_RPM='${MySQLRepoRPM}'
+
+        echo "Starting provisioning: install MySQL Community Server on RHEL9"
+
+        # Update system and install prerequisites
+        dnf -y update || true
+
+        # Install MySQL Yum repo
+        if ! dnf -y install "${MYSQL_REPO_RPM}"; then
+          echo "Failed to install MySQL repo RPM from ${MYSQL_REPO_RPM}. Exiting."
+          exit 1
+        fi
+
+        # Install MySQL server
+        dnf -y module reset mysql || true
+        dnf -y install mysql-community-server
+
+        # Start MySQL
+        systemctl enable --now mysqld
+        sleep 5
+
+        # Secure installation: set root password, remove anonymous/test users
+        echo "Securing MySQL and setting root password"
+        mysql --connect-expired-password <<SQL || true
+        ALTER USER 'root'@'localhost' IDENTIFIED BY '${ROOT_PASSWORD}';
+        DELETE FROM mysql.user WHERE User='';
+        DROP USER IF EXISTS 'root'@'%';
+        DROP DATABASE IF EXISTS test;
+        DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+        FLUSH PRIVILEGES;
+SQL
+
+        # Create application database and user
+        echo "Creating database ${DB_NAME} and user ${DB_USER}"
+        mysql -u root -p"${ROOT_PASSWORD}" <<SQL
+        CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\`;
+        CREATE USER IF NOT EXISTS '${DB_USER}'@'%' IDENTIFIED BY '${DB_PASS}';
+        GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'%';
+        FLUSH PRIVILEGES;
+SQL
+
+        # Configure bind-address for remote access if requested
+        MY_CNF='/etc/my.cnf'
+        if [[ "${ALLOW_REMOTE}" =~ ^(yes|true|1)$ ]]; then
+          echo "Enabling remote MySQL access (bind-address=${BIND_ADDRESS})"
+          if grep -q "^\[mysqld\]" ${MY_CNF}; then
+            if grep -q "bind-address" ${MY_CNF}; then
+              sed -i "s/^bind-address.*/bind-address = ${BIND_ADDRESS}/" ${MY_CNF} || true
+            else
+              sed -i "/^\[mysqld\]/a bind-address = ${BIND_ADDRESS}" ${MY_CNF} || true
+            fi
+          else
+            cat >> ${MY_CNF} <<EOF
+
+[mysqld]
+bind-address = ${BIND_ADDRESS}
+EOF
+          fi
+        fi
+
+        systemctl restart mysqld || true
+
+        # Open firewall port if firewalld present
+        if command -v firewall-cmd >/dev/null 2>&1; then
+          firewall-cmd --permanent --add-port=3306/tcp || true
+          firewall-cmd --reload || true
+        fi
+
+        # Write connection details to /root/DB_INFO.txt (No sensitive echo in logs)
+        cat > /root/DB_INFO.txt <<EOF
+        DB_NAME=${DB_NAME}
+        DB_USER=${DB_USER}
+        DB_HOST=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || echo "<private-ip>")
+        DB_PORT=3306
+        EOF
+
+Outputs:
+  InstanceId:
+    Description: EC2 Instance Id
+    Value: !Ref EC2Instance
+  PublicIP:
+    Description: Public IP of the instance
+    Value: !GetAtt [EC2Instance, PublicIp]
+  DBInfoFile:
+    Description: Location of the DB info file on the instance
+    Value: /root/DB_INFO.txt
+
+Metadata:
+  Notes: |
+    - This template expects you to provide a RHEL9 AMI ID in the ImageId parameter for your region.
+    - For production use consider storing DBPassword and RootPassword in AWS Secrets Manager and retrieving them securely (or use SSM Parameter Store with encryption).
+    - By default AllowRemote is 'no' (the template will not open port 3306 unless you set AllowRemote to 'yes').
+    - The security group created here is simple. For production, restrict SSH and MySQL access to specific CIDR blocks.
